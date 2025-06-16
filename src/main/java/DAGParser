@@ -1,0 +1,82 @@
+package com.ak.test.dag;
+
+import java.util.*;
+
+public class DAGParser {
+    public static Map<String, Task> parseDAG(String flow) {
+        Map<String, Task> result = new HashMap<>();
+        if (flow == null || flow.trim().isEmpty()) {
+            throw new IllegalArgumentException("flow cannot be null or empty");
+        }
+        for (String line : flow.trim().split("\\n")) {
+            if (line.trim().isEmpty()) {
+                continue;
+            }
+            String[] parts = line.split(">>");
+            if (parts.length == 1 && !parts[0].trim().isEmpty()) {
+                String token = parts[0].trim();
+                result.computeIfAbsent(token, key -> new Task(key, key.endsWith("Decision")));
+            } else {
+                for (int i = 0; i < parts.length - 1; i++) {
+                    String leftPart = parts[i].trim().replaceAll("[\\[\\]\\(\\)]", "");
+                    String rightPart = parts[i + 1].trim().replaceAll("[\\[\\]\\(\\)]", "");
+                    for (String left : Arrays.asList(leftPart.split("\\s*,\\s*|\\s*\\|\\s*"))) {
+                        result.computeIfAbsent(left, key -> new Task(key, key.endsWith("Decision")));
+                        for (String right : Arrays.asList(rightPart.split("\\s*,\\s*|\\s*\\|\\s*"))) {
+                            result.computeIfAbsent(right, key -> new Task(key, key.endsWith("Decision")))
+                                    .addParent(result.get(left).getName());
+                            result.get(left).addChild(result.get(right).getName());
+                        }
+                    }
+                }
+            }
+        }
+        System.out.println(print(result));
+        validate(result);
+        return result;
+    }
+
+    private static void validate(Map<String, Task> taskMap) {
+        Set<String> visited = new HashSet<>();
+        Set<String> stack = new HashSet<>();
+
+        for (Task task : taskMap.values()) {
+            if (hasCycle(task.getName(), visited, stack, taskMap)) {
+                throw new IllegalStateException("Cycle detected in DAG at task: " + task.getName());
+            }
+        }
+    }
+
+    private static boolean hasCycle(String task, Set<String> visited, Set<String> stack, Map<String, Task> taskMap) {
+        if (stack.contains(task)) return true;
+        if (visited.contains(task)) return false;
+
+        visited.add(task);
+        stack.add(task);
+        for (String dep : taskMap.get(task).getParents()) {
+            if (hasCycle(dep, visited, stack, taskMap)) return true;
+        }
+        stack.remove(task);
+        return false;
+    }
+
+    private static String print(Map<String, Task> taskMap) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("digraph DAG {\n");
+        sb.append(" rankdir=LR;\n");
+        sb.append(" node [shape=box, style=filled, fillcolor=lightgray];\n");
+        for (Task task : taskMap.values()) {
+            // Node style
+            String label = task.getName();
+            if (task.isDecider()) label += "\\n[Decider]";
+            sb.append(String.format(" \"%s\" [label=\"%s\"];\n", task.getName(), label));
+            // Edges
+            for (String dep : taskMap.get(task.getName()).getParents()) {
+                String style = taskMap.get(dep).isDecider() ? " [style=dashed, color=blue]" : "";
+                sb.append(String.format(" \"%s\" -> \"%s\"%s;\n", dep, task.getName(), style));
+            }
+        }
+        sb.append("}\n");
+        return sb.toString();
+    }
+}
