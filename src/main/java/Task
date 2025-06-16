@@ -1,0 +1,56 @@
+package com.ak.test.dag;
+
+import java.util.*;
+
+public class Task {
+    private final String name;
+    private final List<String> parents = new ArrayList<>();
+    private final Boolean isDecider;
+    private final List<String> children = new ArrayList<>();
+
+    private ExecutionStatus status;
+
+    public Task(String name, Boolean isDecider) {
+        this.name = name;
+        this.isDecider = isDecider;
+    }
+
+    public void addParent(String task) {
+        parents.add(task);
+    }
+
+    public Boolean isDecider() {
+        return isDecider;
+    }
+
+    public List<String> getParents() {
+        return Collections.unmodifiableList(parents);
+    }
+
+    public String getName() {
+        return name;
+    }
+
+    public List<String> getChildren() {
+        return Collections.unmodifiableList(children);
+    }
+
+    public void addChild(String task) {
+        children.add(task);
+    }
+
+    public ExecutionStatus execute(){
+        return ExecutionStatus.SUCCESS; // Placeholder for actual execution logic
+    }
+
+    public Set<String> decide(){
+        return Collections.emptySet();
+    }
+    public ExecutionStatus getStatus() {
+        return status;
+    }
+
+    public void setStatus(ExecutionStatus status) {
+        this.status = status;
+    }
+}
