@@ -1,0 +1,81 @@
+package com.ak.test.dag;
+
+import org.apache.commons.lang3.tuple.Pair;
+
+import java.util.*;
+import java.util.concurrent.*;
+import java.util.regex.*;
+import java.util.*;
+import java.util.concurrent.*;
+
+public class DAGExecutor {
+
+    public void execute(Map<String, Task> tasks) throws InterruptedException {
+        if (tasks == null || tasks.isEmpty()) {
+            throw new IllegalArgumentException("Task map cannot be null or empty");
+        }
+        final ExecutorService executor = Executors.newCachedThreadPool();
+        final Queue<Task> queue = new ConcurrentLinkedQueue<>();
+        final Set<String> queuedTasks = ConcurrentHashMap.newKeySet(); // track already queued
+        // Enqueue root tasks
+        tasks.values().stream().filter(t -> t.getParents().isEmpty()).forEach(task -> { queue.add(task); queuedTasks.add(task.getName());});
+
+        while (!queue.isEmpty()) {
+            Map<String, Future<ExecutionStatus>> runningTasks = new HashMap<>();
+            for (Task task : queue) {
+                runningTasks.put(task.getName(), executor.submit(() -> task.execute()));
+            }
+            queue.clear();
+
+            for (Map.Entry<String, Future<ExecutionStatus>> entry : runningTasks.entrySet()) {
+                String taskName = entry.getKey();
+                Task task = tasks.get(taskName);
+                try {
+                    ExecutionStatus result = entry.getValue().get();
+                    task.setStatus(result); // update task status
+                    List<String> children = task.getChildren();
+                    if (result.isSuccess()) {
+                        Set<String> allowed = task.isDecider() ? task.decide() : Set.copyOf(children);
+                        for (String childName : children) {
+                            Task child = tasks.get(childName);
+                            // Wait until all parents finish
+                            boolean anyParentRunning = child.getParents().stream().anyMatch(p -> tasks.get(p).getStatus() == ExecutionStatus.STARTED);
+                            if (anyParentRunning) {
+                                System.out.println("Waiting for other parents: " + childName);
+                                continue;
+                            }
+                            // If any parent failed, skip
+                            boolean allParentsSuccessful = child.getParents().stream().allMatch(p -> tasks.get(p).getStatus().isSuccess());
+                            if (!allParentsSuccessful) {
+                                child.setStatus(ExecutionStatus.SKIPPED);
+                                System.out.println("Skipping due to failed parent: " + childName);
+                                continue;
+                            }
+                            // Decider exclusion
+                            if (task.isDecider() && !allowed.contains(childName)) {
+                                child.setStatus(ExecutionStatus.SKIPPED);
+                                System.out.println("Decider skipped: " + childName);
+                                continue;
+                            }
+                            // Queue the child only if not already queued and not started
+                            if (queuedTasks.add(child.getName())) {
+                                queue.add(child);
+                            }
+                        }
+                    } else {
+                        // Failure: skip all children
+                        for (String childName : task.getChildren()) {
+                            Task child = tasks.get(childName);
+                            child.setStatus(ExecutionStatus.SKIPPED);
+                            System.out.println("Skipped due to parent failure: " + childName);
+                        }
+                    }
+                } catch (Exception e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+        executor.shutdown();
+        executor.awaitTermination(1, TimeUnit.MINUTES);
+    }
+}
