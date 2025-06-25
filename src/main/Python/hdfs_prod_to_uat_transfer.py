@@ -98,3 +98,5 @@ if __name__ == "__main__":
         print("Usage: python hdfs_prod_to_uat_transfer.py <param_file>")
         sys.exit(1)
     main(sys.argv[1])
+    
+#python hdfs_prod_to_uat_transfer.py paths.txt
