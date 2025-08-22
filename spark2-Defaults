@@ -34,20 +34,30 @@ spark.sql.legacy.decimalOperations.allowPrecisionLoss=true
 
 ### 5. Null / Comparison Semantics
 spark.sql.legacy.nullComparisonBehavior=true
+spark.sql.legacy.nullOrdering.enabled=true   # legacy NULLS ordering
 
 ### 6. Hive & Table Metadata
 spark.sql.legacy.createHiveTableByDefault=true
 spark.sql.legacy.allowCreatingManagedTableUsingNonemptyLocation=true
 spark.sql.legacy.charVarcharAsString=true
 
-### 7. Ambiguous Joins / Column References
+### 7. Joins & Ambiguous Columns
 spark.sql.legacy.allowAmbiguousColumnName=true
+spark.sql.crossJoin.enabled=true
+spark.sql.legacy.cartesianProduct.enabled=true
 
-### 8. Miscellaneous Legacy Switches
+### 8. Grouping / Rollup / Cube
+spark.sql.legacy.groupingIdWithAppendedUserGroupBy=false
+
+### 9. Case Sensitivity & Identifiers
+spark.sql.caseSensitive=false
+spark.sql.legacy.caseSensitiveInferenceMode=INFER_AND_SAVE
+spark.sql.globalTempDatabase=global_temp
+
+### 10. Miscellaneous Legacy Switches
 spark.sql.legacy.sessionInitWithConfigDefaults=true
 spark.sql.legacy.replaceDatabricksSparkAvro.enabled=true
 spark.sql.legacy.interval.enabled=true
-spark.sql.legacy.caseSensitiveInferenceMode=INFER_AND_SAVE
 spark.sql.legacy.sizeOfNull=-1
 
 
