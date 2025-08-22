@@ -1,0 +1,48 @@
+##############################
+# Spark 3 → Spark 2 Compatibility
+##############################
+
+# ANSI / SQL behavior
+spark.sql.ansi.enabled=false
+spark.sql.storeAssignmentPolicy=LEGACY
+spark.sql.legacy.useV1SourceList=parquet,avro,orc,json,csv
+spark.sql.legacy.allowUntypedScalaUDF=true
+
+# Casting & Type Coercion
+spark.sql.legacy.allowCastNumericToTimestamp=true
+spark.sql.legacy.allowCastTimestampToNumeric=true
+spark.sql.legacy.allowCastDateToTimestamp=true
+spark.sql.legacy.allowCastTimestampToDate=true
+spark.sql.legacy.typeCoercion.datetimeToString.enabled=true
+spark.sql.legacy.typeCoercion.inConversion=true
+spark.sql.legacy.typeCoercion.inSetConversion=true
+
+# Datetime / Calendar Rebase (parquet/orc/avro compatibility)
+spark.sql.legacy.timeParserPolicy=LEGACY
+spark.sql.legacy.parquet.datetimeRebaseModeInRead=LEGACY
+spark.sql.legacy.parquet.datetimeRebaseModeInWrite=LEGACY
+spark.sql.legacy.parquet.int96RebaseModeInRead=LEGACY
+spark.sql.legacy.parquet.int96RebaseModeInWrite=LEGACY
+spark.sql.legacy.orc.datetimeRebaseModeInRead=LEGACY
+spark.sql.legacy.orc.datetimeRebaseModeInWrite=LEGACY
+spark.sql.legacy.avro.datetimeRebaseModeInRead=LEGACY
+spark.sql.legacy.avro.datetimeRebaseModeInWrite=LEGACY
+
+# Decimal & Numeric Handling
+spark.sql.legacy.allowNegativeScaleOfDecimal=true
+spark.sql.legacy.decimalOperations.allowPrecisionLoss=true
+
+# Null / Comparison Semantics
+spark.sql.legacy.nullComparisonBehavior=true
+
+# Hive & Table Metadata
+spark.sql.legacy.createHiveTableByDefault=true
+spark.sql.legacy.allowCreatingManagedTableUsingNonemptyLocation=true
+spark.sql.legacy.charVarcharAsString=true
+
+# Miscellaneous
+spark.sql.legacy.sessionInitWithConfigDefaults=true
+spark.sql.legacy.replaceDatabricksSparkAvro.enabled=true
+spark.sql.legacy.interval.enabled=true
+spark.sql.legacy.caseSensitiveInferenceMode=INFER_AND_SAVE
+spark.sql.legacy.sizeOfNull=-1
