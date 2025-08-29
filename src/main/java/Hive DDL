@@ -1,0 +1,26 @@
+CREATE TABLE metadata_store (
+  domain_id STRING,
+  entry_id STRING,
+  domain_data_status STRING,
+  status_updated_at TIMESTAMP
+)
+CLUSTERED BY (entry_id) INTO 10 BUCKETS
+STORED AS ORC
+TBLPROPERTIES (
+  'transactional' = 'true',
+  'transactional_properties' = 'default',
+  'orc.compress' = 'ZLIB',
+  'compactor.mapreduce.map.memory.mb' = '2048',
+  'compactor.mapreduce.reduce.memory.mb' = '2048',
+  'hive.compactor.initiator.on' = 'true',
+  'hive.compactor.worker.threads' = '1',
+  'hive.merge.mapfiles' = 'true',
+  'hive.merge.mapredfiles' = 'true',
+  'hive.merge.tezfiles' = 'true',
+  'hive.merge.size.per.task' = '134217728',
+  'hive.merge.smallfiles.avgsize' = '134217728'
+);
+
+
+SET hive.vectorized.execution.enabled = true;
+SET hive.vectorized.execution.reduce.enabled = true;
