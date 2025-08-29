@@ -12,15 +12,17 @@ TBLPROPERTIES (
   'orc.compress' = 'ZLIB',
   'compactor.mapreduce.map.memory.mb' = '2048',
   'compactor.mapreduce.reduce.memory.mb' = '2048',
+  'hive.compaction.auto.enabled' = 'true',
   'hive.compactor.initiator.on' = 'true',
   'hive.compactor.worker.threads' = '1',
+  'compactorthreshold.hive.compactor.delta.num.threshold' = '10',
+  'compactorthreshold.hive.compactor.delta.size.threshold' = '134217728',
   'hive.merge.mapfiles' = 'true',
   'hive.merge.mapredfiles' = 'true',
   'hive.merge.tezfiles' = 'true',
   'hive.merge.size.per.task' = '134217728',
   'hive.merge.smallfiles.avgsize' = '134217728'
 );
-
 
 SET hive.vectorized.execution.enabled = true;
 SET hive.vectorized.execution.reduce.enabled = true;
