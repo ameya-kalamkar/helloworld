@@ -1,0 +1,41 @@
+import org.apache.catalina.connector.Connector;
+import org.apache.coyote.ProtocolHandler;
+import org.apache.coyote.http11.AbstractHttp11Protocol;
+import org.springframework.boot.web.embedded.tomcat.TomcatServletWebServerFactory;
+import org.springframework.boot.web.server.WebServerFactoryCustomizer;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import java.util.concurrent.Executor;
+import java.util.concurrent.ThreadPoolExecutor;
+
+@Configuration
+public class TomcatConfig {
+
+    @Bean
+    public WebServerFactoryCustomizer<TomcatServletWebServerFactory> tomcatThreadPoolCustomizer() {
+        return factory -> factory.addConnectorCustomizers((Connector connector) -> {
+            ProtocolHandler handler = connector.getProtocolHandler();
+            if (handler instanceof AbstractHttp11Protocol<?> protocol) {
+                // Replace the default executor with your own
+                protocol.setExecutor(customExecutor());
+            }
+        });
+    }
+
+    private Executor customExecutor() {
+        return new ThreadPoolExecutor(
+                20,                       // core threads
+                200,                      // max threads
+                60,                       // idle timeout
+                java.util.concurrent.TimeUnit.SECONDS,
+                new java.util.concurrent.LinkedBlockingQueue<>(500),
+                new java.util.concurrent.ThreadFactory() {
+                    private int count = 0;
+                    public Thread newThread(Runnable r) {
+                        return new Thread(r, "custom-http-thread-" + count++);
+                    }
+                }
+        );
+    }
+}
