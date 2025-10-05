@@ -1,0 +1,236 @@
+package dev.ak;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class Application {
+
+	public static void main(String[] args) {
+		SpringApplication.run(Application.class, args);
+	}
+
+}
+************************************
+package dev.ak.config;
+
+import dev.ak.service.UserService;
+import org.springframework.ai.tool.ToolCallbackProvider;
+import org.springframework.ai.tool.method.MethodToolCallbackProvider;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+@Configuration
+public class McpConfig {
+
+    private final UserService userService;
+
+    @Autowired
+    public McpConfig(UserService userService) {
+        this.userService = userService;
+    }
+
+    @Bean
+    ToolCallbackProvider userTools() {
+        return MethodToolCallbackProvider
+                .builder()
+                .toolObjects(userService)
+                .build();
+    }
+
+}
+************************************
+package dev.ak.model;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.Map;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class User {
+  private int id;
+  private String firstName;
+  private String lastName;
+  private String maidenName;
+  private int age;
+  private String gender;
+  private String email;
+  private String phone;
+  private String username;
+  private String password;
+  private String birthDate;
+  private String image;
+  private String bloodGroup;
+  private double height;
+  private double weight;
+  private String eyeColor;
+  private Map<String, String> hair;
+  private String ip;
+  private Map<String, Object> address;
+  private String macAddress;
+  private String university;
+  private Map<String, Object> bank;
+  private Map<String, Object> company;
+  private String ein;
+  private String ssn;
+  private String userAgent;
+  private Map<String, String> crypto;
+  private String role;
+}
+******************************************
+package dev.ak.model;
+
+import lombok.AllArgsConstructor;
+import lombok.Data;
+import lombok.NoArgsConstructor;
+
+import java.util.List;
+
+@Data
+@NoArgsConstructor
+@AllArgsConstructor
+public class UsersResponse {
+  private List<User> users;
+  private int total;
+  private int skip;
+  private int limit;
+}
+**********************************************
+package dev.ak.service;
+
+import dev.ak.model.UsersResponse;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.ai.tool.annotation.Tool;
+import org.springframework.boot.web.client.RestTemplateBuilder;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestTemplate;
+
+@Service
+@Slf4j
+public class UserService {
+
+    private final RestTemplate restTemplate;
+    private final String BASE_URL = "https://dummyjson.com";
+
+    public UserService(RestTemplateBuilder restTemplateBuilder) {
+        this.restTemplate = restTemplateBuilder.build();
+    }
+
+    @Tool(name = "getAllUsers", description = "Get all users")
+    public UsersResponse getAllUsers(int limit, int skip) {
+        System.out.println("Fetching users with limit: " + limit + " and skip: " + skip);
+        String url = BASE_URL + "/users?limit=" + limit + "&skip=" + skip;
+        return restTemplate.getForObject(url, UsersResponse.class);
+    }
+}
+******************************************
+spring.main.web-application-type=none
+spring.main.banner-mode=off
+logging.pattern.console=%d{yyyy-MM-dd HH:mm:ss} - %msg%n
+
+spring.ai.mcp.server.enabled=true
+spring.ai.mcp.server.name=mcp-server
+spring.ai.mcp.server.version=0.0.1
+spring.ai.mcp.server.stdio=true
+spring.ai.mcp.server.type=SYNC
+spring.ai.mcp.server.resource-change-notification=true
+spring.ai.mcp.server.tool-change-notification=true
+spring.ai.mcp.server.prompt-change-notification=true
+  
+logging.file.name=mcp-server.log
+*****************************************
+{
+  servers: {
+    "dummy-user-server AK": {
+      "command": "java",
+      "args": [
+        "-jar",
+        "C://DevTools//mcp-server-spring-java-main//target//mcp-server-1.0.0.jar"
+      ]
+    }
+  }
+}
+*****************************************
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+	<modelVersion>4.0.0</modelVersion>
+	<parent>
+		<groupId>org.springframework.boot</groupId>
+		<artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.5.6</version>
+		<relativePath/>
+	</parent>
+	<groupId>dev.ak</groupId>
+	<artifactId>mcp-server</artifactId>
+	<version>1.0.0</version>
+	<name>mcp-server</name>
+	<packaging>jar</packaging>
+
+	<properties>
+		<java.version>17</java.version>
+	</properties>
+
+	<dependencies>
+        <!--<dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+        </dependency>
+        -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-mcp-server</artifactId>
+            <version>1.0.0</version>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+        </dependency>
+		<dependency>
+			<groupId>org.projectlombok</groupId>
+			<artifactId>lombok</artifactId>
+			<optional>true</optional>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-test</artifactId>
+			<scope>test</scope>
+		</dependency>
+	</dependencies>
+	<!--<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>org.springframework.ai</groupId>
+				<artifactId>spring-ai-bom</artifactId>
+				<version>1.1.0-M2</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>-->
+
+	<build>
+		<plugins>
+			<plugin>
+				<groupId>org.springframework.boot</groupId>
+				<artifactId>spring-boot-maven-plugin</artifactId>
+				<configuration>
+					<excludes>
+						<exclude>
+							<groupId>org.projectlombok</groupId>
+							<artifactId>lombok</artifactId>
+						</exclude>
+					</excludes>
+				</configuration>
+			</plugin>
+		</plugins>
+	</build>
+
+</project>
+
+
