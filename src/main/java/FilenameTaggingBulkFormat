@@ -1,0 +1,116 @@
+public class FilenameTaggingBulkFormat<T> implements BulkFormat<T, FileSourceSplit> {
+
+    private final BulkFormat<T, FileSourceSplit> delegate;
+    private final Class<T> producedClass;
+
+    private FilenameTaggingBulkFormat(BulkFormat<T, FileSourceSplit> delegate, Class<T> producedClass) {
+        this.delegate = delegate;
+        this.producedClass = producedClass;
+    }
+
+    /** Wrap a StreamFormat (e.g. CsvReaderFormat, TextLineInputFormat) — gets correct
+     *  offset/boundary handling for free via StreamFormatAdapter, IF the format is splittable. */
+    public static <T> FilenameTaggingBulkFormat<T> forStreamFormat(StreamFormat<T> streamFormat, Class<T> producedClass) {
+        return new FilenameTaggingBulkFormat<>(new StreamFormatAdapter<>(streamFormat), producedClass);
+    }
+
+    /** Wrap an existing BulkFormat directly (e.g. a Parquet/ORC columnar reader) — no adapter needed,
+     *  since it already natively speaks FileSourceSplit. */
+    public static <T> FilenameTaggingBulkFormat<T> forBulkFormat(BulkFormat<T, FileSourceSplit> bulkFormat, Class<T> producedClass) {
+        return new FilenameTaggingBulkFormat<>(bulkFormat, producedClass);
+    }
+
+    @Override
+    public BulkFormat.Reader<T> createReader(Configuration config, FileSourceSplit split) throws IOException {
+        return tagWithFilename(delegate.createReader(config, split), split.path().getName());
+    }
+
+    @Override
+    public BulkFormat.Reader<T> restoreReader(Configuration config, FileSourceSplit split) throws IOException {
+        return tagWithFilename(delegate.restoreReader(config, split), split.path().getName());
+    }
+
+    @Override
+    public boolean isSplittable() {
+        return delegate.isSplittable();
+    }
+
+    @Override
+    public TypeInformation<T> getProducedType() {
+        return delegate.getProducedType();
+    }
+
+    private BulkFormat.Reader<T> tagWithFilename(BulkFormat.Reader<T> inner, String fileName) {
+        Field field = resolveAnnotatedField(producedClass);
+        if (field == null) return inner; // POJO opted out — zero-overhead pass-through
+
+        return new BulkFormat.Reader<T>() {
+            @Override
+            public BulkFormat.RecordIterator<T> readBatch() throws IOException {
+                BulkFormat.RecordIterator<T> batch = inner.readBatch();
+                return batch == null ? null : new TaggingIterator(batch, field, fileName);
+            }
+            @Override
+            public void close() throws IOException {
+                inner.close();
+            }
+        };
+    }
+
+    private static class TaggingIterator<T> implements BulkFormat.RecordIterator<T> {
+        private final BulkFormat.RecordIterator<T> inner;
+        private final Field field;
+        private final String fileName;
+
+        TaggingIterator(BulkFormat.RecordIterator<T> inner, Field field, String fileName) {
+            this.inner = inner;
+            this.field = field;
+            this.fileName = fileName;
+        }
+
+        @Override
+        public RecordAndPosition<T> next() {
+            RecordAndPosition<T> rec = inner.next();
+            if (rec == null) return null;
+            try {
+                field.set(rec.getRecord(), fileName);
+            } catch (IllegalAccessException e) {
+                throw new RuntimeException("Failed to set @FileName field", e);
+            }
+            return rec;
+        }
+
+        @Override
+        public void releaseBatch() {
+            inner.releaseBatch();
+        }
+    }
+
+    // --- annotation resolution, cached per class, fail-fast on misuse (from earlier) ---
+
+    private static final Map<Class<?>, Field> FIELD_CACHE = new ConcurrentHashMap<>();
+
+    private static Field resolveAnnotatedField(Class<?> clazz) {
+        return FIELD_CACHE.computeIfAbsent(clazz, FilenameTaggingBulkFormat::scanForAnnotation);
+    }
+
+    private static Field scanForAnnotation(Class<?> clazz) {
+        Field found = null;
+        for (Class<?> c = clazz; c != null; c = c.getSuperclass()) {
+            for (Field f : c.getDeclaredFields()) {
+                if (f.isAnnotationPresent(FileName.class)) {
+                    if (found != null) {
+                        throw new IllegalStateException("Multiple @FileName fields on " + clazz.getName());
+                    }
+                    if (f.getType() != String.class) {
+                        throw new IllegalStateException(
+                                "@FileName field '" + f.getName() + "' must be String, found " + f.getType());
+                    }
+                    f.setAccessible(true);
+                    found = f;
+                }
+            }
+        }
+        return found;
+    }
+}
