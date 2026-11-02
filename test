@@ -1,0 +1,372 @@
+# Generic Maker-Checker Data Management App — Design
+
+Nov 2, 2026 · Ameya Kalamkar
+
+## Overview
+
+A generic, config-driven web app (React + Spring Boot REST) to browse and change Oracle tables under maker-checker control, with SCD2-style in-table lineage and data-level entitlement enforced in the DAO. Other SQL databases are supported later through a dialect layer.
+
+**In scope**
+
+- Read-only browsing of entitled data, grouped by business domain
+- Record-level create, update and delete through maker-checker approval
+- Bulk CSV upload per table, validated asynchronously, approved as one request
+- Full lineage per business record (Z record) plus a workflow audit trail
+- Every operation has a generic default and can be overridden with Spring beans
+
+**Design principles**
+
+- Configuration in code (versioned JSON in git), not in framework tables
+- Pending changes never touch business tables until approved
+- Entitlement fails closed; no code path reaches a table without it
+- Identifiers come only from validated metadata; all values are bind parameters
+
+## Architecture
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ React UI                                                 │
+│ Domains, workspace, table grid, bulk upload, approvals   │
+└───────────────────────────┬──────────────────────────────┘
+                            │ REST / JSON + session key
+┌───────────────────────────▼──────────────────────────────┐
+│ Spring Boot API                                          │      ┌───────────────────────┐
+│  ┌──────────────────────────┐ ┌──────────────────────────┐│────▶│ SSO                   │
+│  │ Config + metadata        │ │ Security filter          ││     │ Session-key validation│
+│  │ Domains, tables, roles   │ │ SSO session key to user  ││     └───────────────────────┘
+│  └──────────────────────────┘ └──────────────────────────┘│     ┌───────────────────────┐
+│  ┌──────────────────────────┐ ┌──────────────────────────┐│────▶│ Entitlement service   │
+│  │ Workflow service         │ │ Entitlement interpreter  ││     │ One JSON per SSO user │
+│  │ Maker-checker, approval  │ │ JSON to roles + filters  ││     └───────────────────────┘
+│  └──────────────────────────┘ └──────────────────────────┘│
+│  ┌──────────────────────────┐ ┌──────────────────────────┐│
+│  │ Bulk validation executor │ │ ** Entitled DAO + dialect││
+│  │ Async, chunked, 1 node   │ │ Entitlement, SCD2 apply  ││
+│  └──────────────────────────┘ └──────────────────────────┘│
+│  ┌──────────────────────────┐ ┌──────────────────────────┐│
+│  │ Handler resolver         │ │ Validators + lookups     ││
+│  │ Table/domain/global beans│ │ Overridable Spring beans ││
+│  └──────────────────────────┘ └──────────────────────────┘│
+└──────────────┬───────────────────────────────┬────────────┘
+               │ read / write files            │ JDBC
+┌──────────────▼─────────────┐ ┌───────────────▼────────────┐
+│ Shared file store          │ │ Oracle                     │
+│ Uploaded CSV files         │ │ Business tables, Z lineage │
+│ Validation result files    │ │ APP_CHANGE_REQUEST         │
+└────────────────────────────┘ └────────────────────────────┘
+```
+
+One generic Spring Boot API serves every configured table; config and Spring beans decide per-table behaviour, and every data access passes through the entitled DAO.
+
+- **Data access:** JdbcTemplate with a metadata-driven SQL builder, not JPA, since tables are dynamic. Identifiers come only from validated metadata; values are always bind parameters.
+- **Portability:** a `SqlDialect` interface covers pagination, timestamps, sequences and the open-ended high date. Oracle first; Postgres or SQL Server later.
+- **Frontend:** React + TypeScript, AG Grid or TanStack Table, React Query, React Hook Form + Zod.
+
+## Configuration
+
+Domains, table metadata and role mapping live as versioned JSON in git, loaded at startup and validated against `ALL_TAB_COLUMNS`; any mismatch or unknown bean name fails startup. No framework tables are needed for them.
+
+```
+config/
+  domains.json          # domains + table mapping with per-domain operations
+  role-mapping.json     # entitlement JSON entries -> role per domain
+  tables/
+    fx_rate_override.json
+    book_ref.json
+```
+
+- The config path can live outside the jar so ops can update it without a rebuild; hot reload is optional later.
+- Each change request stores the config version (commit id or hash) for audit.
+- Domains, tables and columns all carry a `displayName` (plus optional description and display order).
+
+**Multi-domain tables.** A table is defined once and mapped to any number of domains, each with its own allowed operations:
+
+```json
+[
+  { "id": "MARKET_DATA", "displayName": "Market Data",
+    "tables": [
+      { "tableId": "FX_RATE_OVERRIDE", "operations": ["READ","CREATE","UPDATE","DELETE","BULK"] },
+      { "tableId": "BOOK_REF", "operations": ["READ"] } ] },
+  { "id": "FINANCE_OPS", "displayName": "Finance Operations",
+    "tables": [
+      { "tableId": "FX_RATE_OVERRIDE", "operations": ["READ","BULK"] } ] }
+]
+```
+
+**Table metadata (one JSON per table).**
+
+```json
+{
+  "tableId": "FX_RATE_OVERRIDE",
+  "schema": "REFDATA",
+  "table": "FX_RATE_OVERRIDE",
+  "displayName": "FX Rate Overrides",
+  "description": "Manual overrides applied to EOD FX rates",
+  "sequence": "FX_RATE_OVERRIDE_SEQ",
+  "surrogateKey": "RECORD_ID",
+  "lineage": { "origPk": "ORIG_PK", "effDate": "EFF_DT", "endDate": "END_DT", "openEndDate": "2099-12-31" },
+  "businessKey": { "column": "BUS_KEY", "virtual": true, "parts": ["CCY_PAIR", "BOOK"] },
+  "entitlement": { "resource": "FX_OVERRIDE", "columnMap": { "region": "REGION_CD", "book": "BOOK" } },
+  "handlers": {
+    "recordValidators": ["fxOverrideValidator"],
+    "bulkValidators": ["fxFileTotalsValidator"],
+    "approvalPolicy": "twoCheckerPolicy",
+    "applyStrategy": { "UPDATE": "fxOverrideProcApply" },
+    "listeners": ["fxCacheEvictListener"]
+  },
+  "columns": [
+    { "name": "CCY_PAIR", "displayName": "Currency Pair", "order": 1, "editable": false, "required": true,
+      "validators": [{ "type": "regex", "value": "^[A-Z]{3}/[A-Z]{3}$" }] },
+    { "name": "BOOK", "displayName": "Trading Book", "order": 2, "lookup": { "bean": "bookLookupProvider" } },
+    { "name": "RATE", "displayName": "Override Rate", "order": 3, "validators": [{ "bean": "positiveRateValidator" }] }
+  ]
+}
+```
+
+## Auth, roles and entitlement
+
+Every request passes two independent gates: a functional role in the request's domain, and data-level entitlement applied in the DAO.
+
+**Authentication.** A Spring Security filter reads the SSO session key (header or cookie), validates it against SSO and builds the `Authentication`. React sends the cookie or header with each call.
+
+**Entitlement JSON.** The entitlement service returns one JSON per SSO user. It is fetched once per session, cached with a TTL, and turned into one model by a pluggable `EntitlementInterpreter`:
+
+```java
+record UserEntitlements(
+    String userId,
+    Map<String, Set<Role>> rolesByDomain,          // via role-mapping.json
+    Map<String, DataFilter> filtersByResource      // e.g. REGION_CD IN (...)
+) {}
+```
+
+**Roles per domain.** `READONLY`, `MAKER`, `CHECKER`, plus `ADMIN`. A user can be a maker on a table in one domain and read-only on the same table in another.
+
+**Data entitlement in the DAO.**
+
+- `EntitledDao` maps filters to columns via `entitlement.columnMap` and appends them to every SELECT, count, export and history query.
+- Writes: a maker can't create or change a row whose before or after values fall outside their entitlement.
+- Approval: the checker's entitlement is re-checked at approval; pending lists only show requests the user is entitled to see.
+- Lookups receive the user, so lookup values are entitlement-filtered too.
+- Fail closed: entitlement service down or no entitlement for a resource means no data.
+
+**Domain context.** Every call carries the domain it was made from, and the change request stores it. The checker must hold CHECKER in that domain (to be confirmed). Only one open change per business key is allowed across all domains.
+
+## Record lineage (Z record)
+
+All versions of a business record live in the same table, tied together by `ORIG_PK`; the current row has `END_DT = 31-Dec-2099`. Existing tables already have audit columns and per-table Oracle sequences for `RECORD_ID`.
+
+| Action on approval | Effect |
+| --- | --- |
+| Insert | `id = seq.nextval`; new row with `RECORD_ID = id`, `ORIG_PK = id`, `EFF_DT = approval ts`, `END_DT = 31-Dec-2099` |
+| Update | Close current row (`END_DT = approval ts`), insert new row with new `RECORD_ID`, same `ORIG_PK`, `EFF_DT = approval ts`, `END_DT = 31-Dec-2099` |
+| Delete | Close current row only; nothing is physically deleted |
+
+- Current view: `END_DT = DATE '2099-12-31'`. History: `WHERE ORIG_PK = :x ORDER BY EFF_DT`.
+- Each version row's audit columns hold maker, checker and the `REQUEST_ID`, linking data to workflow both ways.
+- Stale check: approval compares the request's `BASE_RECORD_ID` with the current row; a mismatch fails the request as `FAILED_STALE`.
+
+**Business key as an Oracle virtual column.**
+
+```sql
+ALTER TABLE FX_RATE_OVERRIDE ADD (
+  BUS_KEY VARCHAR2(400) GENERATED ALWAYS AS (CCY_PAIR || '|' || BOOK) VIRTUAL
+);
+
+-- one current row per business key, enforced by the database
+CREATE UNIQUE INDEX UX_FXRO_CURR ON FX_RATE_OVERRIDE
+  (CASE WHEN END_DT = DATE '2099-12-31' THEN BUS_KEY END);
+```
+
+- Metadata marks it `"virtual": true`, so it is excluded from INSERT and UPDATE column lists.
+- Choose a delimiter that cannot appear in the data, and decide how NULL key parts are handled.
+- Postgres and SQL Server have equivalent generated/computed columns.
+- Fallback if DDL is not allowed: compute the key in the app from metadata, losing the database-level uniqueness guarantee.
+
+## Change requests and workflow
+
+One framework table, `APP_CHANGE_REQUEST`, holds both record-level and file-level requests. A rejected or withdrawn request is final and a resubmission is a new request, so no separate event table is needed.
+
+```sql
+CREATE TABLE APP_CHANGE_REQUEST (
+  REQUEST_ID            NUMBER PRIMARY KEY,        -- sequence
+  DOMAIN_ID             VARCHAR2(50)  NOT NULL,    -- domain the request was raised in
+  TABLE_ID              VARCHAR2(100) NOT NULL,    -- one table per request, files included
+  REQUEST_TYPE          VARCHAR2(10)  NOT NULL,    -- RECORD | FILE
+  OPERATION             VARCHAR2(10)  NOT NULL,    -- INSERT | UPDATE | DELETE | BULK
+  -- RECORD requests
+  ORIG_PK               NUMBER,
+  BASE_RECORD_ID        NUMBER,                    -- current version at submit (stale check)
+  BUS_KEY               VARCHAR2(400),
+  BEFORE_JSON           CLOB CHECK (BEFORE_JSON IS JSON),
+  AFTER_JSON            CLOB CHECK (AFTER_JSON IS JSON),
+  -- FILE requests
+  FILE_ORIG_NAME        VARCHAR2(255),
+  FILE_STORED_NAME      VARCHAR2(255),             -- e.g. REQ_000123.csv
+  RESULT_FILE_NAME      VARCHAR2(255),             -- e.g. REQ_000123.result.csv
+  FILE_CHECKSUM         VARCHAR2(64),              -- SHA-256, verified before apply
+  VALID_COUNT           NUMBER,
+  INVALID_COUNT         NUMBER,
+  PROGRESS_PCT          NUMBER(3),
+  PROCESSING_NODE       VARCHAR2(100),
+  VALIDATION_STARTED_TS TIMESTAMP,
+  VALIDATION_ENDED_TS   TIMESTAMP,
+  SUMMARY_JSON          CLOB,                      -- inserts/updates/deletes, errors
+  -- workflow
+  STATUS                VARCHAR2(20) NOT NULL,
+  MAKER_ID   VARCHAR2(50), MAKER_TS   TIMESTAMP, MAKER_COMMENT   VARCHAR2(1000),
+  CHECKER_ID VARCHAR2(50), CHECKER_TS TIMESTAMP, CHECKER_COMMENT VARCHAR2(1000),
+  FAILURE_REASON        VARCHAR2(2000),
+  CONFIG_VERSION        VARCHAR2(64),
+  ROW_VERSION           NUMBER DEFAULT 0           -- optimistic lock against double approval
+);
+```
+
+**Statuses**
+
+| Status | Applies to | Meaning |
+| --- | --- | --- |
+| UPLOADED | File | Stored, waiting for validation |
+| VALIDATING | File | Background validation running |
+| VALIDATED | File | Valid and invalid counts ready; maker can submit or discard |
+| VALIDATION_FAILED | File | File-level error (bad header, wrong table, over threshold) |
+| SUBMITTED | Both | Awaiting checker |
+| APPROVED | Both | Approved, being applied |
+| APPLIED | Both | Written to the business table |
+| REJECTED | Both | Checker rejected, comment mandatory |
+| WITHDRAWN | Both | Maker withdrew |
+| FAILED_STALE | Both | Data changed or re-validation failed at approval |
+
+**Rules**
+
+- A maker cannot approve their own request (default policy).
+- One open request per business key, across all domains.
+- Uploaded files live in a shared directory (NFS or similar if multiple nodes) as `REQ_<id>.csv`, with the original name kept in the row.
+- Record requests are created only after passing validation; there are no draft rows.
+
+## Validation
+
+Record operations validate synchronously and block the entry; bulk uploads validate asynchronously on a separate screen, and only valid rows can be approved.
+
+**Record operations (blocking)**
+
+1. The form checks basic rules from metadata (required, regex, length) in the browser for quick feedback.
+2. On submit the server runs column validators, record validators and the entitlement write check.
+3. Any failure returns field-level errors and nothing is stored.
+4. At approval, validators run again because reference data may have changed.
+
+**Bulk upload (async, separate screen)**
+
+1. The maker uploads a CSV for one table. It is stored as `REQ_<id>.csv` and the request is UPLOADED.
+2. A dedicated, bounded executor claims the job: `UPDATE ... SET STATUS='VALIDATING', PROCESSING_NODE=:me WHERE REQUEST_ID=:id AND STATUS='UPLOADED'`, so only one node runs it.
+3. The file is streamed in chunks of about 1,000 rows. Per row: parse, column and record validators, entitlement on before and after values, and classification as insert, update or delete via one current-row lookup per chunk.
+4. File-level checks: duplicate business keys in the file, error-percentage threshold, conflicts with other open requests.
+5. Results go to `REQ_<id>.result.csv` with each row's status and errors; the maker can download only the error rows, fix them and re-upload.
+6. The UI polls progress, valid count and invalid count. On startup, jobs left in VALIDATING by a crashed node are re-queued.
+7. The maker submits only the valid rows. The checker sees valid rows with diffs and the excluded rows for context.
+8. At approval: verify the checksum, re-validate the valid rows, then apply them all in one transaction.
+
+## Extension points
+
+Every step is a Spring bean with a generic default, overridable at three levels; the most specific wins: per table and operation (table JSON `handlers`), per domain (domains.json), then global (`@Primary` bean replacing a `@ConditionalOnMissingBean` default).
+
+| Extension point | Default | Typical override |
+| --- | --- | --- |
+| `SessionAuthenticator` | SSO session-key validation | Other SSO, local dev stub |
+| `EntitlementInterpreter` | Entitlement JSON to roles + data filters | Firm-specific JSON shape |
+| `EntitlementEnforcer` | SQL predicate in DAO + write check | Rules too complex for a predicate |
+| `LookupProvider` | SQL lookup from metadata | Service or cache lookup |
+| `ColumnValidator` / `RecordValidator` | Regex, range, required, length | Cross-field or business rules |
+| `BulkValidator` | Row loop + duplicate and threshold checks | Whole-file rules (totals, reconciliation) |
+| `FileParser` | CSV | Excel, fixed-width |
+| `ApprovalPolicy` | 1 checker, no self-approval | 2 checkers, auto-approve under a limit |
+| `ApplyStrategy` | SCD2 close + insert | Stored procedure, plain update, downstream API |
+| `KeyGenerator` | Per-table Oracle sequence | Other key scheme |
+| `OperationListener` | No-op | Notifications, events, cache eviction |
+| `SqlDialect` | Oracle | Postgres, SQL Server |
+
+```java
+public interface ColumnValidator { ValidationResult validate(Object value, ColumnContext ctx); }
+public interface RecordValidator { ValidationResult validate(Map<String,Object> after, Map<String,Object> before, RecordContext ctx); }
+public interface LookupProvider  { List<LookupOption> options(String query, UserEntitlements user); }
+
+@Component("twoCheckerPolicy")
+public class TwoCheckerPolicy implements ApprovalPolicy {
+    public ApprovalDecision canApprove(ChangeRequest req, UserContext checker) { ... }
+    public boolean isFullyApproved(ChangeRequest req, List<Approval> approvals) { ... }
+}
+```
+
+- A `HandlerResolver` picks the bean per table, domain and operation, and caches the choice.
+- Listeners get `beforeApply` inside the transaction and `afterCommit` outside it, so a failed notification never rolls back an approved change.
+
+**Pipeline**
+
+```
+Submit (record): auth -> role(domain) -> entitlement(before) -> column validators -> record validators
+                 -> entitlement(after) -> ApprovalPolicy.onSubmit -> persist -> listeners
+Approve:         ApprovalPolicy.canApprove -> entitlement -> re-validate -> stale check
+                 -> ApplyStrategy (tx) -> listeners(afterCommit)
+```
+
+## REST API and UI
+
+**REST API (sketch)**
+
+```
+GET  /api/domains                                       domains the user has a role in
+GET  /api/domains/{d}/tables                            tables + pending counts
+GET  /api/domains/{d}/tables/{t}/metadata
+GET  /api/domains/{d}/tables/{t}/records?filter=&sort=&page=   current rows, entitled
+GET  /api/domains/{d}/tables/{t}/records/{origPk}/history
+POST /api/domains/{d}/tables/{t}/changes                record create/update/delete
+POST /api/domains/{d}/tables/{t}/uploads                CSV -> async validation
+GET  /api/uploads/{id}                                  progress + counts
+GET  /api/uploads/{id}/errors                           error rows as CSV
+POST /api/uploads/{id}/submit | discard
+GET  /api/domains/{d}/changes?table=&status=            pending actions
+POST /api/changes/{id}/approve | reject | withdraw
+GET  /api/domains/{d}/tables/{t}/export                 entitled CSV
+```
+
+**Screens (React + TypeScript)**
+
+1. **Domains:** a tile per domain the user can access, with table count, pending count and role badge.
+2. **Domain workspace:**
+    1. Top half: the domain's tables with display name, description, row count, my pending and awaiting my approval.
+    2. Bottom half: consolidated pending actions across the domain's tables, with bulk approve and reject for checkers and withdraw for makers; filters by table, maker, status and age.
+3. **Table view:** metadata-driven grid with server-side paging, filter and sort; generated add/edit forms with validators and lookups; history drawer per record; export.
+4. **Bulk upload:** a separate screen per table for upload, progress, valid and invalid counts, error download, submit or discard.
+5. **Approval detail:** side-by-side before/after diff with changed fields highlighted; for files, a summary and paged preview of valid rows.
+
+Proposed stack: AG Grid (or TanStack Table), React Query, React Hook Form + Zod with schemas generated from column metadata.
+
+## Delivery phases and testing
+
+Phase 1 builds the extension-point interfaces and resolver first, so every later feature sits on them.
+
+| Phase | Scope |
+| --- | --- |
+| 1. Foundation | Spring Boot skeleton, config loader and validator, extension-point interfaces + `HandlerResolver`, SSO filter, entitlement interpreter, entitled DAO, Oracle dialect; read-only React screens (domains, workspace with pending panel, table grid with history) |
+| 2. Maker-checker | Record change requests with blocking validation, approval policy, SCD2 apply, stale detection, diff view |
+| 3. Bulk | Upload screen, async validation executor, result files, submit valid rows, batch approval, export |
+| 4. Hardening | Notifications, second dialect, performance (cached counts), optional config hot reload |
+
+**Testing**
+
+- Integration tests on Testcontainers Oracle Free.
+- Entitlement leakage suite: for every configured table, assert users cannot read or write outside their entitlement.
+- Workflow tests: self-approval blocked, stale detection, one open request per key, double approval prevented by `ROW_VERSION`.
+- Bulk tests: node crash during validation re-queues the job; checksum mismatch blocks apply.
+
+## Open questions
+
+- [ ] **Bulk re-validation failure:** if a row valid at upload fails at approval, fail the whole approval (proposed default) or skip that row and apply the rest with the skip recorded?
+- [ ] **Cross-domain approval:** must the checker hold CHECKER in the domain where the request was raised (proposed), or is CHECKER in any domain containing the table enough?
+- [ ] **Error threshold:** reject the whole file above an invalid-row percentage, or always allow submitting the valid subset?
+- [ ] **Date granularity:** are `EFF_DT` and `END_DT` DATE or TIMESTAMP? Is a closed row's `END_DT` the exact approval time, or approval time minus one second or day?
+- [ ] **Re-created keys:** when a deleted business key is inserted again, does it get a new `ORIG_PK` or continue the old lineage?
+- [ ] **Entitlement JSON:** share a sanitized sample to design the `EntitlementInterpreter` and `role-mapping.json`.
+- [ ] **SSO validation:** how is the session key validated: an introspection endpoint or a shared library?
+- [ ] **DDL approval:** can DBAs add the `BUS_KEY` virtual column and the current-row unique index to existing tables?
+- [ ] **Upload limits:** maximum file size or row count? Single-transaction apply suits a few hundred thousand rows; larger needs a staged approach.
+- [ ] **Shared storage:** which shared directory (NFS or other) will hold uploaded and result files across nodes, and what is the retention period?
