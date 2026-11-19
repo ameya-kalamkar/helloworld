@@ -1,0 +1,38 @@
+TASK: Implement DuckDBFileCompareNodeOperator, Phase 3. Phases 1 and 2 are merged; build on them.
+
+SPEC: docs/specs/duckdb-file-compare.md. Relevant sections: 3 (field table, Config validation), 5.10, 5.11, 5.12, 5.13, 7.
+Where the spec differs from existing code conventions, follow the existing code and note it in the PR.
+
+IN SCOPE (Phase 3)
+1. Keyless mode (sec 5.10): mode = "keyless". Project both sides onto the same ordered column list
+   (compare columns sorted by name), casting a column to VARCHAR on both sides when types differ.
+   left_only = L EXCEPT ALL R, right_only = R EXCEPT ALL L. No rules, no keys, no key check
+   (warn in summary if they are set). Buckets: MATCH, LEFT_ONLY, RIGHT_ONLY only.
+   All objects stay in the job's work schema cmp_<runId>, as in Phase 1.
+2. keylessMaxRows guard (sec 5.10): operator-level property, default 1,000,000 rows per side.
+   Parquet: row count from file metadata before reading data. CSV: checked right after materialising.
+   Over the limit: FAILED with a message telling the user to use keyed mode.
+3. Profiling (sec 5.11, 5.13): profiling.enabled + metrics (rowCount, nullCount, distinctCount, min, max)
+   from SUMMARIZE on a 1% sample (SUMMARIZE (FROM L USING SAMPLE 1%)); rowCount from the exact table
+   count. Mark distinctCount and sampled metrics as approximate in summary.json. Off by default.
+4. HTML report (sec 7): output.report.enabled + path. One static, self-contained HTML file (inline CSS,
+   no external resources, no JavaScript needed) built by Java from summary data: run info, verdict,
+   bucket counts, schema and key findings, threshold results, mismatch count per column (top 50),
+   diff sample. HTML-escape every data value.
+5. includeMatched (sec 7): write matched.parquet with key columns of MATCH rows when true;
+   honours parallelWrite like the other outputs.
+
+OUT OF SCOPE
+- Any change to the keyed two-pass compare, validation stages or output contract from Phases 1-2.
+- DuckDB connection setup and settings (owned by the existing setup).
+
+ACCEPTANCE CRITERIA
+A. Golden tests for keyless: identical files; duplicate rows counted correctly (multiset semantics);
+   a changed row appears once in left_only and once in right_only; type-differing column compared as text;
+   keys/rules set in keyless mode produce a warning, not an error.
+B. keylessMaxRows: Parquet over limit fails before data is read; CSV over limit fails after
+   materialise; at or under limit runs.
+C. Profiling: metrics present only when enabled; approximate fields flagged.
+D. Report: generated file opens standalone; a value containing <script> is shown escaped.
+E. includeMatched true and false both covered.
+F. Phase 1 and 2 tests pass unchanged.
