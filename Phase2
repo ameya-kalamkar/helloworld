@@ -1,0 +1,51 @@
+TASK: Implement DuckDBFileCompareNodeOperator, Phase 2. Phase 1 is merged; build on it, do not restructure it.
+
+SPEC: docs/specs/duckdb-file-compare.md. Relevant sections: 3 (field table, Config validation), 5.8, 5.13, 6, 7, 9, 10, Appendix A.
+Where the spec differs from existing code conventions, follow the existing code and note it in the PR.
+
+IN SCOPE (Phase 2)
+1. date rule (sec 6): new RuleRenderer bean. formatLeft / formatRight optional;
+   try_strptime(c::VARCHAR, fmt)::DATE on each side, try_cast(c AS DATE) when no format.
+   Unparseable value = mismatch (via the existing coalesce(..., false) wrapper).
+   Add its validation: blank formats rejected in stage 1; formats probed on a 1,000-row sample in stage 2
+   (sec 3, Config validation).
+2. thresholds.abortCandidatePct (sec 5.8, 7): candidates / keys on both sides * 100, checked right after
+   pass 1. On breach: skip pass 2 and diffs, write summary.json with counts from pass 1 and a clear reason,
+   status FAILED. Unset = not checked.
+3. dryRun (sec 3, 9): run bind, work schema, ingest views, staging views and schema check (DESCRIBE only),
+   log every generated SQL statement at INFO, read no full data, write no output files except
+   summary.json with schema findings, return SUCCESS (or FAILED if schema policy fails).
+4. Duplicates output file (sec 7): write dup_keys to output.duplicates when non-empty; null-key counts
+   stay in summary.json.
+5. Scale benchmark (sec 5.13, 10): a test or small tool, excluded from the default CI run (tag or profile),
+   that generates a synthetic pair with DuckDB itself: range(20000000) rows, 2 key columns, 500 value
+   columns of mixed types (VARCHAR, BIGINT, DECIMAL, DATE), right side with about 1% of rows altered,
+   0.1% left-only and 0.1% right-only. Write left as CSV (several files in one directory) and right as
+   Parquet. Run the operator and record per-phase timings, peak temp-dir disk use and the summary counts.
+6. Tuning from the benchmark (sec 5.13): apply what the numbers show inside the job (for example explicit
+   CSV types). DuckDB setup values (threads, memory, temp dir, storage) are NOT set by the job; report
+   recommended values for Appendix A in the PR. Do not change the two-pass design or the output contract
+   without explaining why in the PR.
+7. Benchmark-driven decisions (sec 5.13, "To decide by benchmark"): on the synthetic pair, measure and
+   report (a) Parquet on both sides: materialise into tables vs re-reading the files in pass 2;
+   (b) pass 1 spill: if it spills heavily, try the key-bucket fallback (hash(keys) % N buckets,
+   pass 1 + pass 2 per bucket); (c) typeMode text vs native for the CSV side.
+   Implement materialise: auto ONLY if (a) shows a clear win, and build bucketing ONLY if (b) shows it
+   is needed; justify both with the numbers. Also report which DuckDB storage setup (file-backed vs
+   in-memory with spill) was fastest, as advice for Appendix A, with no code change.
+
+OUT OF SCOPE
+- keyless mode, profiling, HTML report, includeMatched (Phase 3).
+- Any regex rule type (removed from the spec).
+- DuckDB connection setup and settings (owned by the existing setup).
+
+ACCEPTANCE CRITERIA
+A. date rule tests: same date in different formats matches; different dates mismatch; unparseable
+   mismatches; NULL handling with both nullEqualsNull values; blank format rejected at bind;
+   wrong format caught by the stage 2 sample probe.
+B. Golden tests: abortCandidatePct breached (pass 2 skipped, reason in summary) and not breached;
+   dryRun (no data files written, SQL logged, schema findings in summary); duplicates file written.
+C. Benchmark report in the PR: machine or pod size, DuckDB settings in effect, wall time per phase,
+   peak temp disk, candidate count vs mismatched count. The counts must equal the injected changes.
+   Include the three comparisons from item 7 as a small table with wall time and peak disk for each.
+D. Phase 1 tests still pass unchanged (snapshot updates only where a new feature changes SQL, explained).
